@@ -63,6 +63,9 @@ class PageCreateSerializer(serializers.ModelSerializer):
 
 
 class PageUpdateSerializer(PageCreateSerializer):
+    name = serializers.CharField(required=False, allow_blank=True)
+    description_html = serializers.CharField(required=False, allow_blank=True, trim_whitespace=False)
+
     class Meta(PageCreateSerializer.Meta):
         fields = ["name", "description_html"]
 

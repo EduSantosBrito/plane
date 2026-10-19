@@ -30,3 +30,11 @@ def test_html_validation():
     )
     if serializer.is_valid():
         assert "<script" not in serializer.validated_data["description_html"]
+
+
+@pytest.mark.parametrize("payload", [{"name": "Rename"}, {"description_html": "<p>Content</p>"}])
+def test_update_fields_are_individually_optional_for_openapi(payload):
+    serializer = PageUpdateSerializer(data=payload)
+    assert serializer.is_valid(), serializer.errors
+    assert not serializer.fields["name"].required
+    assert not serializer.fields["description_html"].required
