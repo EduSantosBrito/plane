@@ -1,0 +1,12 @@
+# The exact running release is retained; no dependency or DB migration changes.
+ARG BASE_IMAGE=makeplane/plane-backend@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
+FROM ${BASE_IMAGE}
+ARG REVISION=development
+LABEL org.opencontainers.image.source="https://github.com/EduSantosBrito/plane" \
+      org.opencontainers.image.revision="${REVISION}"
+COPY apps/api/plane/api/page_locks.py /code/plane/api/page_locks.py
+COPY apps/api/plane/api/serializers/page.py /code/plane/api/serializers/page.py
+COPY apps/api/plane/api/views/page.py /code/plane/api/views/page.py
+COPY apps/api/plane/api/urls/page.py /code/plane/api/urls/page.py
+COPY apps/api/plane/api/urls/__init__.py /code/plane/api/urls/__init__.py
+COPY apps/api/plane/utils/openapi/hooks.py /code/plane/utils/openapi/hooks.py

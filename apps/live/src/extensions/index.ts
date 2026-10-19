@@ -4,6 +4,7 @@
  * See the LICENSE file for details.
  */
 
+import { PageApiLock } from "./page-api-lock";
 import { Database } from "./database";
 import { ForceCloseHandler } from "./force-close-handler";
 import { Logger } from "./logger";
@@ -12,6 +13,7 @@ import { TitleSyncExtension } from "./title-sync";
 
 export const getExtensions = () => [
   new Logger(),
+  new PageApiLock(),
   new Database(),
   new Redis(),
   new TitleSyncExtension(),

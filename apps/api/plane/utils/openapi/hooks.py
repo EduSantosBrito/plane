@@ -13,12 +13,14 @@ transformations.
 
 def preprocess_filter_api_v1_paths(endpoints):
     """
-    Filter OpenAPI endpoints to only include /api/v1/ paths and exclude PUT methods.
+    Filter API v1 paths; retain PUT for endpoints explicitly declaring that contract.
     """
     filtered = []
     for path, path_regex, method, callback in endpoints:
-        # Only include paths that start with /api/v1/ and exclude PUT methods
-        if path.startswith("/api/v1/") and method.upper() != "PUT" and "server" not in path.lower():
+        # Most legacy PUT methods are hidden aliases. Pages use PUT as their
+        # documented update contract, so let those views opt in explicitly.
+        include_put = getattr(getattr(callback, "cls", None), "schema_include_put", False)
+        if path.startswith("/api/v1/") and (method.upper() != "PUT" or include_put) and "server" not in path.lower():
             filtered.append((path, path_regex, method, callback))
     return filtered
 

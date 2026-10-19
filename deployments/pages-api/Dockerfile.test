@@ -1,0 +1,10 @@
+FROM makeplane/plane-backend:v1.4.2
+RUN pip install --no-cache-dir pytest==9.0.3 pytest-django==4.12.0 pytest-mock==3.11.1 ruff
+COPY apps/api /code
+ENV DJANGO_SETTINGS_MODULE=plane.settings.test \
+    DATABASE_URL=postgresql://plane:plane@pages-test-db:5432/plane \
+    REDIS_URL=redis://pages-test-redis:6379/0 \
+    SECRET_KEY=isolated-pages-api-tests \
+    API_KEY_RATE_LIMIT=10000/minute
+ENTRYPOINT ["pytest"]
+CMD ["plane/tests/contract/api/test_pages.py", "plane/tests/unit/serializers/test_public_page.py", "--override-ini=addopts=--nomigrations -q"]

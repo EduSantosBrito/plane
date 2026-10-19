@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=makeplane/plane-live@sha256:cbb630ccaea24bb9998040cb45c11619a7501e8b6c75d449df2f8fd9b9cddbd0
+FROM ${BASE_IMAGE} AS builder
+WORKDIR /app/apps/live
+COPY apps/live/src ./src
+COPY apps/live/tsconfig.json apps/live/tsdown.config.ts ./
+RUN ./node_modules/.bin/tsc --noEmit --project tsconfig.json && ./node_modules/.bin/tsdown
+
+FROM ${BASE_IMAGE}
+ARG REVISION=development
+LABEL org.opencontainers.image.source="https://github.com/EduSantosBrito/plane" \
+      org.opencontainers.image.revision="${REVISION}"
+COPY --from=builder /app/apps/live/dist /app/apps/live/dist

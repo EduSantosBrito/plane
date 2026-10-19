@@ -105,8 +105,9 @@ export class Server {
 
   public async destroy() {
     if (this.hocuspocusServer) {
-      this.hocuspocusServer.closeConnections();
-      logger.info("SERVER: HocusPocus connections closed gracefully.");
+      // Wait for final document stores and unload hooks before closing Redis.
+      await this.hocuspocusServer.destroy();
+      logger.info("SERVER: HocusPocus documents stored and connections closed gracefully.");
     }
 
     await redisManager.disconnect();
