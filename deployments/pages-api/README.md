@@ -75,7 +75,16 @@ selects the two images above. For the immediate cutover, build only its new
 planectl derivation and install a systemd ExecStart drop-in using that command.
 This avoids activating unrelated local NixOS edits. Keep the new derivation
 as a GC root. The module configuration takes over on the next full rebuild.
-The drop-in and its runtime start script live in `/var/lib/plane/pages-api/`.
+The runtime files live in `/var/lib/plane/pages-api/`. The persistent drop-in
+is installed at `/etc/systemd/system.control/plane.service.d/50-pages-api.conf`:
+NixOS's `/etc/systemd/system` points into the immutable store. systemd's
+control-directory drop-in overrides ExecStart on subsequent boots. Remove it
+after a full NixOS rebuild has activated the matching module configuration,
+so later declarative image updates are not masked. Until then, administer the
+fork with `sudo /var/lib/plane/pages-api/planectl`; the system-wide planectl
+still refers to the currently activated upstream system generation. Both
+planectl derivations are retained as GC roots. The built fork image tags are
+local Docker images; rebuild them from the pinned source if they are pruned.
 The existing API, worker, beat-worker, and migrator share the backend image;
 other services keep their original images. Existing named volumes are reused.
 
