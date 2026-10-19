@@ -48,6 +48,7 @@ def page_docs(scope, action, **kwargs):
 class PageEndpoint(BaseAPIView):
     serializer_class = PageSerializer
     scope = "workspace"
+    defer_write_permission = False
     schema_include_put = True
 
     def check_permissions(self, request):
@@ -78,7 +79,11 @@ class PageEndpoint(BaseAPIView):
             if role is None:
                 raise PermissionDenied()
         self.member_role = role
-        if request.method not in SAFE_METHODS and role not in (15, 20):
+        if not self.defer_write_permission:
+            self.require_write_permission()
+
+    def require_write_permission(self):
+        if self.request.method not in SAFE_METHODS and self.member_role not in (15, 20):
             raise PermissionDenied()
 
     def pages(self):

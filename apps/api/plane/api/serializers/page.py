@@ -3,7 +3,7 @@
 
 from rest_framework import serializers
 
-from plane.db.models import Page
+from plane.db.models import IssuePage, Page
 from plane.utils.content_validator import validate_html_content
 
 
@@ -73,3 +73,16 @@ class PageUpdateSerializer(PageCreateSerializer):
         if not attrs:
             raise serializers.ValidationError("Provide name, description_html, or both.")
         return attrs
+
+
+class IssuePageCreateSerializer(serializers.Serializer):
+    page_id = serializers.UUIDField()
+
+
+class IssuePageSerializer(serializers.ModelSerializer):
+    page = PageSerializer(read_only=True)
+
+    class Meta:
+        model = IssuePage
+        fields = ["id", "page", "issue", "project", "workspace", "created_at", "updated_at", "created_by"]
+        read_only_fields = fields

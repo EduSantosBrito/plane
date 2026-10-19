@@ -1,4 +1,4 @@
-# The exact running release is retained; no dependency or DB migration changes.
+# The upstream base and dependencies stay pinned; IssuePage adds one table.
 ARG BASE_IMAGE=makeplane/plane-backend@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
 FROM ${BASE_IMAGE}
 ARG REVISION=development
@@ -10,3 +10,9 @@ COPY apps/api/plane/api/views/page.py /code/plane/api/views/page.py
 COPY apps/api/plane/api/urls/page.py /code/plane/api/urls/page.py
 COPY apps/api/plane/api/urls/__init__.py /code/plane/api/urls/__init__.py
 COPY apps/api/plane/utils/openapi/hooks.py /code/plane/utils/openapi/hooks.py
+COPY apps/api/plane/db/models/page.py /code/plane/db/models/page.py
+COPY apps/api/plane/db/models/__init__.py /code/plane/db/models/__init__.py
+COPY apps/api/plane/db/migrations/0123_issuepage.py /code/plane/db/migrations/0123_issuepage.py
+COPY apps/api/plane/api/views/work_item_page.py /code/plane/api/views/work_item_page.py
+COPY apps/api/plane/api/views/work_item_relation.py /code/plane/api/views/work_item_relation.py
+COPY apps/api/plane/api/urls/work_item.py /code/plane/api/urls/work_item.py

@@ -2,8 +2,9 @@
 
 Based on upstream `v1.4.2` (`5f7d92784c403f76284f0f16718f320221dc7fec`).
 The backend and live Dockerfiles extend the exact upstream image digests used
-by the existing installation. No dependencies, database models, migrations,
-frontend assets, or storage paths change.
+by the existing installation. Dependencies, frontend assets and storage paths
+stay unchanged. Migration `0123_issuepage` adds the explicit work-item Page
+attachment table.
 
 ## API and SDK
 
@@ -27,7 +28,40 @@ changed.
 
 The [Plane CLI/SDK](https://github.com/EduSantosBrito/plane-cli) has the matching
 routes. Set PLANE_API_URL to the instance URL and use its existing API key.
-Work-item Page associations remain Cloud-only and are outside this extension.
+Five additional operations implement the CLI overlay contract:
+
+- GET/POST `/workspaces/{slug}/projects/{project_id}/work-items/{issue_id}/pages/`
+- GET/DELETE the same path plus `{work_item_page_id}/` (the association UUID)
+- POST `/workspaces/{slug}/projects/{project_id}/work-items/{issue_id}/relations/remove/`
+
+All are under `/api/v1/`. Associations serialize a full nested Page and use
+Plane cursor pagination (`per_page` 1–100, default 20). Duplicate attach returns
+the existing association with 200; a new association returns 201. Detach soft
+deletes the association and returns 204; repeating it returns 404. The partial
+unique constraint `issue_page_unique_live_pair` prevents duplicate active pairs.
+
+Attachments require active workspace and project membership. Read visibility
+matches project Pages, including private ownership and guest feature access.
+Writing requires project role Member or Admin; a visible Page with insufficient
+write permission returns 403. Invisible, archived, deleted, foreign-project and
+workspace-global Pages return 404. Workspace-global Pages are excluded even if
+also linked to the project. These filters apply to attach, list, retrieve and
+detach, including attachments whose Page later changes scope or visibility.
+Deleted work items and associations are hidden too.
+
+The approved model deviation is additive: v1.4.2 has editor `PageLog` mentions,
+not Cloud's explicit attachment model. `IssuePage` provides independent links
+with `issue.issue_pages` and `page.issue_pages` reverse relations. Existing
+mentions, browser routes, Page content and work-item descriptions stay intact.
+The public response matches the existing CLI overlay; no SDK change is needed.
+Attachments do not add editor mentions or a browser attachment UI.
+
+Relation removal validates both work items in the workspace and membership of
+the routed project. It atomically soft deletes all edges between the two items
+in either stored direction. v1.4.2 normally stores a canonical edge and derives
+the reverse on reads; paired legacy rows are also removed together. Missing
+relations between existing work items return 204 (idempotent); missing work
+items return 404. No unrelated edges are removed.
 
 ## Collaborative editor
 
@@ -56,7 +90,7 @@ From the repository root:
 
 ```sh
 revision=$(git rev-parse HEAD)
-docker build -f deployments/pages-api/Dockerfile.backend --build-arg REVISION="$revision" -t edusantosbrito/plane-backend:v1.4.2-pages.1 .
+docker build -f deployments/pages-api/Dockerfile.backend --build-arg REVISION="$revision" -t edusantosbrito/plane-backend:v1.4.2-pages.2 .
 docker build -f deployments/pages-api/Dockerfile.live --build-arg REVISION="$revision" -t edusantosbrito/plane-live:v1.4.2-pages.1 .
 ```
 
@@ -68,6 +102,9 @@ PageApiLock tests use vitest. The SDK has an opt-in integration test that
 creates and deletes Pages and must use a disposable database.
 
 ## Existing server deployment
+
+These describe the initial Pages cutover. The attachment extension below
+updates the runtime wrapper to use the second backend image.
 
 The NixOS module `/home/host/nixos-dotfiles/modules/plane.nix` exposes
 services.plane.backendImage and services.plane.liveImage. The server config
@@ -103,3 +140,32 @@ images and ExecStart behavior without changing the database or volumes.
 The matching SDK modifications are additive, so reverting backend/live images
 does not require reverting database migrations. A data restore is a separate
 recovery operation; do not overwrite live data just to revert application code.
+
+## Deploying the attachment extension
+
+Run `sudo bash deployments/pages-api/deploy-attachments.sh` after building and
+testing the image. This script performs the backup, isolated restore validation,
+migration, restart and data/volume comparisons described below. It expects the
+existing isolated `pages-test-db` and `pages-test-redis` containers on
+`plane-routes-tests`.
+
+Build the backend with `deployments/pages-api/Dockerfile.backend` and tag it
+`edusantosbrito/plane-backend:v1.4.2-pages.2`. Keep the existing live image.
+The backend Dockerfile includes the new model, migration, views and public URLs.
+Run migration checks and API tests on the isolated PostgreSQL/Redis network
+before touching production. Set `AMQP_URL=memory://` for tests without RabbitMQ.
+
+The server uses `attachments.compose.yml` under `/var/lib/plane/pages-api` to
+override only API, worker, beat-worker and migrator images. Its `planectl` wrapper
+combines the existing immutable compose file with that override. `start.sh` uses
+this wrapper, so the existing systemd ExecStart drop-in survives reboot. A future
+NixOS rebuild should incorporate the new backend image declaratively before
+removing this override.
+
+Before restart, pause proxy/live/API/workers, save a private PostgreSQL dump,
+upload archive, runtime configuration and row-content hashes. Validate the dump
+and upload archive. Run the new image's `manage.py migrate --noinput`, then
+recreate API/workers and restart live/proxy. Verify row hashes and volume
+identities before creating scratch fixtures. Do not remove volumes. Retain the
+previous runtime configuration and images for rollback: old application images
+ignore the additive table, so rollback should not drop it or restore live data.

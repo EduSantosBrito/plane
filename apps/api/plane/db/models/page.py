@@ -14,6 +14,7 @@ from django.db import models
 from plane.utils.html_processor import strip_tags
 
 from .base import BaseModel
+from .project import ProjectBaseModel
 
 
 def get_view_props():
@@ -180,3 +181,21 @@ class PageVersion(BaseModel):
             else strip_tags(self.description_html)
         )
         super(PageVersion, self).save(*args, **kwargs)
+
+
+class IssuePage(ProjectBaseModel):
+    """Explicit API attachments; editor mentions remain independent PageLog rows."""
+
+    issue = models.ForeignKey("db.Issue", on_delete=models.CASCADE, related_name="issue_pages")
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name="issue_pages")
+
+    class Meta:
+        db_table = "issue_pages"
+        ordering = ("-created_at", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["issue", "page"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="issue_page_unique_live_pair",
+            )
+        ]

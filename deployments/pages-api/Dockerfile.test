@@ -5,6 +5,7 @@ ENV DJANGO_SETTINGS_MODULE=plane.settings.test \
     DATABASE_URL=postgresql://plane:plane@pages-test-db:5432/plane \
     REDIS_URL=redis://pages-test-redis:6379/0 \
     SECRET_KEY=isolated-pages-api-tests \
+    AMQP_URL=memory:// \
     API_KEY_RATE_LIMIT=10000/minute
 ENTRYPOINT ["pytest"]
-CMD ["plane/tests/contract/api/test_pages.py", "plane/tests/unit/serializers/test_public_page.py", "--override-ini=addopts=--nomigrations -q"]
+CMD ["plane/tests/contract/api/test_pages.py", "plane/tests/contract/api/test_work_item_pages.py", "plane/tests/contract/api/test_work_item_relation_remove.py", "plane/tests/unit/serializers/test_public_page.py", "--override-ini=addopts=--nomigrations -q"]
