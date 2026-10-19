@@ -4,7 +4,9 @@
 from rest_framework import serializers
 
 from plane.db.models import IssuePage, Page
+from plane.api.page_content import PageContentOptions, render_page_content
 from plane.utils.content_validator import validate_html_content
+from plane.utils.host import base_host
 
 
 class PageSerializer(serializers.ModelSerializer):
@@ -79,8 +81,45 @@ class IssuePageCreateSerializer(serializers.Serializer):
     page_id = serializers.UUIDField()
 
 
+class PageMetadataSerializer(PageSerializer):
+    url = serializers.SerializerMethodField()
+
+    class Meta(PageSerializer.Meta):
+        fields = [
+            "id",
+            "name",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "updated_by",
+            "archived_at",
+            "is_global",
+            "access",
+            "url",
+        ]
+        read_only_fields = fields
+
+    def get_url(self, page):
+        view = self.context["view"]
+        return (
+            f"{base_host(self.context['request']).rstrip('/')}/{view.kwargs['slug']}"
+            f"/projects/{view.kwargs['project_id']}/pages/{page.id}"
+        )
+
+
+class PageReadSerializer(PageMetadataSerializer):
+    def to_representation(self, page):
+        options = self.context.get("page_content", PageContentOptions())
+        if options.legacy:
+            return PageSerializer(page).data
+        result = super().to_representation(page)
+        if options.mode != "metadata":
+            result.update(render_page_content(page, options))
+        return result
+
+
 class IssuePageSerializer(serializers.ModelSerializer):
-    page = PageSerializer(read_only=True)
+    page = PageReadSerializer(read_only=True)
 
     class Meta:
         model = IssuePage

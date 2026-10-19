@@ -16,3 +16,4 @@ COPY apps/api/plane/db/migrations/0123_issuepage.py /code/plane/db/migrations/01
 COPY apps/api/plane/api/views/work_item_page.py /code/plane/api/views/work_item_page.py
 COPY apps/api/plane/api/views/work_item_relation.py /code/plane/api/views/work_item_relation.py
 COPY apps/api/plane/api/urls/work_item.py /code/plane/api/urls/work_item.py
+COPY apps/api/plane/api/page_content.py /code/plane/api/page_content.py

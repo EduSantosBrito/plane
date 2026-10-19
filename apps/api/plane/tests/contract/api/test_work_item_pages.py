@@ -41,7 +41,20 @@ def test_attachment_lifecycle(api_key_client, workspace, project, work_item, cre
     association = response.json()
     assert association["id"] != str(page.id)
     assert association["page"]["id"] == str(page.id)
-    assert association["page"]["description_html"] == "<p>Read me</p>"
+    assert set(association["page"]) == {
+        "id",
+        "name",
+        "created_at",
+        "updated_at",
+        "created_by",
+        "updated_by",
+        "archived_at",
+        "is_global",
+        "access",
+        "url",
+    }
+    assert association["page"]["url"] == f"http://testserver/{workspace.slug}/projects/{project.id}/pages/{page.id}"
+    assert len(response.content) <= 1024
     assert association["issue"] == str(work_item.id)
     assert association["project"] == str(project.id)
     assert association["workspace"] == str(workspace.id)
@@ -235,3 +248,270 @@ def test_global_and_removed_project_links_are_hidden_for_existing_associations(
     assert api_key_client.get(url(workspace, project, work_item)).json()["results"] == []
     assert api_key_client.get(detail).status_code == 404
     assert api_key_client.delete(detail).status_code == 404
+
+
+def test_full_content_opt_in_preserves_legacy_payload(api_key_client, workspace, project, work_item, create_user):
+    page = make_page(
+        workspace, create_user, project, description_html="<p>Read me</p>", description_json={"doc": "keep"}
+    )
+    project_url = f"/api/v1/workspaces/{workspace.slug}/projects/{project.id}/pages/{page.id}/"
+    legacy_page = api_key_client.get(project_url).json()
+    collection = url(workspace, project, work_item)
+    first = api_key_client.post(collection + "?with_content=true", {"page_id": str(page.id)}, format="json")
+    assert first.status_code == 201
+    assert first.json()["page"] == legacy_page
+    detail = url(workspace, project, work_item, first.json()["id"])
+    for params in ({"with_content": "true"}, {"with_content": "true", "body_format": "html"}):
+        assert api_key_client.get(detail, params).json()["page"] == legacy_page
+        assert api_key_client.get(collection, params).json()["results"][0]["page"] == legacy_page
+    duplicate = api_key_client.post(collection + "?with_content=true", {"page_id": str(page.id)}, format="json")
+    assert duplicate.status_code == 200
+    assert duplicate.json() == first.json()
+
+
+PREAMBLE = "<p>Intro 🏠 &amp; café</p>\n"
+SUMMARY = '<H2 class="editor-heading-block" DATA-ID="summary">Executive <em>summary</em></H2><p>Root 🍀</p>'
+CHILD = '<h3 data-id="detail">Detail</h3><p>Child</p>'
+DEEP = "<h4>No id</h4><p>Deep</p>"
+NEXT = '<h2 data-id="next">Next</h2><p>End</p>'
+DOCUMENT = PREAMBLE + SUMMARY + CHILD + DEEP + NEXT
+ROOT_TEXT = "Executive summaryRoot 🍀DetailChildNo idDeep"
+
+
+@pytest.fixture
+def document(api_key_client, workspace, project, work_item, create_user):
+    page = make_page(workspace, create_user, project, name="Structured", description_html=DOCUMENT)
+    association = attach(api_key_client, workspace, project, work_item, page).json()
+    return page, url(workspace, project, work_item), url(workspace, project, work_item, association["id"])
+
+
+def test_outline_and_sections_preserve_heading_hierarchy_and_markup(api_key_client, document):
+    page, collection, detail = document
+    outline = api_key_client.get(detail, {"sections": "true"}).json()["page"]
+    assert outline["section_count"] == 5
+    assert outline["total_chars"] == len("Intro 🏠 & café\n" + ROOT_TEXT + "NextEnd")
+    assert outline["outline"] == [
+        {"id": "preamble", "level": 0, "title": "", "text_chars": len("Intro 🏠 & café\n")},
+        {"id": "summary", "level": 2, "title": "Executive summary", "text_chars": len(ROOT_TEXT)},
+        {"id": "detail", "level": 3, "title": "Detail", "text_chars": len("DetailChildNo idDeep")},
+        {"id": "s3", "level": 4, "title": "No id", "text_chars": len("No idDeep")},
+        {"id": "next", "level": 2, "title": "Next", "text_chars": len("NextEnd")},
+    ]
+    assert not {"body", "description_html", "description_json", "description_stripped"}.intersection(outline)
+    listed = api_key_client.get(collection, {"sections": "true"}).json()["results"][0]["page"]
+    assert listed == outline
+    result = api_key_client.get(detail, {"section": ["summary", "preamble", "s3"]}).json()["page"]
+    assert [row["id"] for row in result["sections"]] == ["summary", "preamble", "s3"]
+    assert result["sections"][0] == {
+        "id": "summary",
+        "level": 2,
+        "title": "Executive summary",
+        "body": SUMMARY + CHILD + DEEP,
+        "body_format": "html",
+        "text_chars": len(ROOT_TEXT),
+        "total_chars": len(SUMMARY + CHILD + DEEP),
+        "truncated": False,
+    }
+    assert result["sections"][1]["body"] == PREAMBLE
+    assert result["sections"][2]["body"] == DEEP
+    assert "Next" not in result["sections"][0]["body"]
+    assert not {"outline", "body", "description_html", "description_json", "description_stripped"}.intersection(result)
+
+
+@pytest.mark.parametrize("html,text", [("<p>Only intro</p>", "Only intro"), ("", "")])
+def test_no_headings_is_one_reachable_preamble(api_key_client, workspace, project, work_item, create_user, html, text):
+    page = make_page(workspace, create_user, project, description_html=html)
+    association = attach(api_key_client, workspace, project, work_item, page).json()
+    detail = url(workspace, project, work_item, association["id"])
+    data = api_key_client.get(detail, {"sections": "true"}).json()["page"]
+    assert data["section_count"] == 1
+    assert data["outline"] == [{"id": "preamble", "level": 0, "title": "", "text_chars": len(text)}]
+    result = api_key_client.get(detail, {"section": "preamble", "body_format": "text"}).json()["page"]["sections"][0]
+    assert result["body"] == text
+    assert result["total_chars"] == len(text)
+
+
+def test_section_text_and_unicode_truncation(api_key_client, document):
+    page, collection, detail = document
+    full = api_key_client.get(detail, {"section": "summary", "body_format": "text"}).json()["page"]["sections"][0]
+    assert full["body"] == ROOT_TEXT
+    assert full["text_chars"] == full["total_chars"] == len(ROOT_TEXT)
+    params = {"section": "preamble", "body_format": "text", "limit_chars": 7}
+    truncated = api_key_client.get(detail, params).json()["page"]["sections"][0]
+    assert truncated["body"] == "Intro 🏠"
+    assert truncated["truncated"] is True
+    assert truncated["text_chars"] == truncated["total_chars"] == len("Intro 🏠 & café\n")
+    assert truncated["body"].encode().decode() == "Intro 🏠"
+    html = api_key_client.get(detail, {"section": "summary", "limit_chars": 10}).json()["page"]["sections"][0]
+    assert html["body"] == SUMMARY[:10]
+    assert html["total_chars"] == len(SUMMARY + CHILD + DEEP)
+    assert html["truncated"] is True
+    exact = api_key_client.get(detail, {"section": "summary", "limit_chars": len(SUMMARY + CHILD + DEEP)}).json()[
+        "page"
+    ]["sections"][0]
+    assert exact["truncated"] is False
+
+
+def test_full_text_and_full_truncation_do_not_leak_other_body_formats(api_key_client, document):
+    page, collection, detail = document
+    expected = "Intro 🏠 & café\n" + ROOT_TEXT + "NextEnd"
+    text = api_key_client.get(detail, {"with_content": "true", "body_format": "text"}).json()["page"]
+    assert text["body"] == expected == page.description_stripped
+    assert text["total_chars"] == text["text_chars"] == len(expected)
+    assert text["truncated"] is False
+    assert not {"description_html", "description_json", "description_stripped"}.intersection(text)
+    capped = api_key_client.get(detail, {"with_content": "true", "limit_chars": 9}).json()["page"]
+    assert capped["body"] == DOCUMENT[:9]
+    assert capped["body_format"] == "html"
+    assert capped["total_chars"] == len(DOCUMENT)
+    assert capped["text_chars"] == len(expected)
+    assert capped["truncated"] is True
+    assert not {"description_html", "description_json", "description_stripped"}.intersection(capped)
+
+
+INVALID_CONTENT = [
+    ({"with_content": "yes"}, "with_content"),
+    ({"with_content": "TRUE"}, "with_content"),
+    ({"with_content": ""}, "with_content"),
+    ({"sections": "1"}, "sections"),
+    ({"sections": "FALSE"}, "sections"),
+    ({"with_content": "true", "sections": "true"}, "sections"),
+    ({"with_content": "true", "sections": "false"}, "sections"),
+    ({"with_content": "true", "section": "summary"}, "section"),
+    ({"sections": "true", "section": "summary"}, "section"),
+    ({"sections": "true", "body_format": "html"}, "body_format"),
+    ({"sections": "true", "limit_chars": "500"}, "limit_chars"),
+    ({"body_format": "html"}, "body_format"),
+    ({"with_content": "false", "body_format": "text"}, "body_format"),
+    ({"limit_chars": "500"}, "limit_chars"),
+    ({"sections": "false", "limit_chars": "500"}, "limit_chars"),
+    ({"section": "summary", "body_format": "markdown"}, "body_format"),
+    ({"with_content": "true", "body_format": "HTML"}, "body_format"),
+    ({"section": "summary", "limit_chars": "0"}, "limit_chars"),
+    ({"section": "summary", "limit_chars": "-1"}, "limit_chars"),
+    ({"section": "summary", "limit_chars": "100001"}, "limit_chars"),
+    ({"section": "summary", "limit_chars": "1.5"}, "limit_chars"),
+    ({"section": "summary", "limit_chars": "no"}, "limit_chars"),
+    ({"section": "summary", "limit_chars": "9" * 4400}, "limit_chars"),
+    ({"section": ""}, "section"),
+    ({"section": ["summary"] * 11}, "section"),
+    ({"with_content": ["true", "false"]}, "with_content"),
+    ({"body_format": ["html", "text"], "section": "summary"}, "body_format"),
+    ({"limit_chars": ["1", "2"], "section": "summary"}, "limit_chars"),
+    ({"sections": ["true", "false"]}, "sections"),
+]
+
+
+@pytest.mark.parametrize("operation", ["list", "retrieve", "attach"])
+@pytest.mark.parametrize("params,field", INVALID_CONTENT)
+def test_invalid_content_query_is_a_field_error(
+    api_key_client, workspace, project, work_item, document, operation, params, field
+):
+    from urllib.parse import urlencode
+
+    page, collection, detail = document
+    if operation == "attach":
+        response = api_key_client.post(
+            collection + "?" + urlencode(params, doseq=True), {"page_id": str(page.id)}, format="json"
+        )
+    else:
+        response = api_key_client.get(collection if operation == "list" else detail, params)
+    assert response.status_code == 400, response.content
+    assert field in response.json(), response.json()
+    assert response.json()[field]
+
+
+@pytest.mark.parametrize("operation", ["list", "retrieve", "attach"])
+def test_unknown_section_ids_are_named_and_failed_attach_rolls_back(
+    api_key_client, workspace, project, work_item, create_user, document, operation
+):
+    page, collection, detail = document
+    if operation == "attach":
+        fresh = make_page(workspace, create_user, project, description_html=DOCUMENT)
+        response = api_key_client.post(
+            collection + "?section=missing-one&section=missing-two", {"page_id": str(fresh.id)}, format="json"
+        )
+        assert str(fresh.id) not in {row["page"]["id"] for row in api_key_client.get(collection).json()["results"]}
+    else:
+        response = api_key_client.get(
+            collection if operation == "list" else detail, {"section": ["missing-one", "missing-two"]}
+        )
+    assert response.status_code == 400, response.content
+    assert "section" in response.json()
+    assert "missing-one" in str(response.json()["section"])
+    assert "missing-two" in str(response.json()["section"])
+
+
+def test_false_switches_limits_and_repeatable_sections(api_key_client, document):
+    page, collection, detail = document
+    light = api_key_client.get(detail).json()
+    for params in ({"with_content": "false"}, {"sections": "false"}, {"with_content": "false", "sections": "false"}):
+        assert api_key_client.get(detail, params).json() == light
+    assert (
+        api_key_client.get(detail, {"with_content": "false", "sections": "true"}).json()["page"]["section_count"] == 5
+    )
+    sections = api_key_client.get(
+        detail, {"sections": "false", "section": ["next"] * 10, "limit_chars": 100000}
+    ).json()["page"]["sections"]
+    assert len(sections) == 1
+    assert sections[0]["id"] == "next"
+    assert sections[0]["truncated"] is False
+
+
+def test_project_page_reads_keep_defaults_and_support_explicit_content_modes(
+    api_key_client, workspace, project, document
+):
+    page, collection, detail = document
+    base = f"/api/v1/workspaces/{workspace.slug}/projects/{project.id}/pages/"
+    legacy = api_key_client.get(base + f"{page.id}/").json()
+    assert legacy["description_html"] == DOCUMENT
+    assert "description_json" in legacy
+    assert "url" not in legacy
+    assert api_key_client.get(base).json()["results"][0] == legacy
+    for params in ({"with_content": "false"}, {"sections": "true"}, {"section": "summary", "body_format": "text"}):
+        expected = api_key_client.get(detail, params).json()["page"]
+        assert api_key_client.get(base + f"{page.id}/", params).json() == expected
+        assert api_key_client.get(base, params).json()["results"][0] == expected
+    assert api_key_client.get(base + f"{page.id}/", {"body_format": "text"}).status_code == 400
+    assert api_key_client.get(base, {"limit_chars": 500}).status_code == 400
+
+
+def test_missing_resource_messages_and_visibility_order_are_unchanged(
+    api_key_client, workspace, project, work_item, create_user
+):
+    missing = api_key_client.get(url(workspace, project, work_item, uuid.uuid4()))
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "No IssuePage matches the given query."}
+    assert api_key_client.get("/api/v1/not-a-real-route/").json() == {"error": "Page not found."}
+    private_owner = User.objects.create(email="hidden-section@plane.test", username="hidden-section")
+    private = make_page(workspace, private_owner, project, access=1, description_html=DOCUMENT)
+    ProjectMember.objects.filter(project=project, member=create_user).update(role=5)
+    response = api_key_client.post(
+        url(workspace, project, work_item) + "?section=summary", {"page_id": str(private.id)}, format="json"
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sections": "true"},
+        {"section": ["summary", "s3"], "body_format": "text"},
+        {"with_content": "true", "body_format": "text", "limit_chars": 7},
+    ],
+)
+def test_attach_accepts_selective_modes_on_new_and_existing_pair(
+    api_key_client, workspace, project, work_item, create_user, params
+):
+    from urllib.parse import urlencode
+
+    page = make_page(workspace, create_user, project, description_html=DOCUMENT)
+    collection = url(workspace, project, work_item)
+    endpoint = collection + "?" + urlencode(params, doseq=True)
+    first = api_key_client.post(endpoint, {"page_id": str(page.id)}, format="json")
+    assert first.status_code == 201, first.content
+    second = api_key_client.post(endpoint, {"page_id": str(page.id)}, format="json")
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    detail = url(workspace, project, work_item, first.json()["id"])
+    assert api_key_client.get(detail, params).json() == first.json()

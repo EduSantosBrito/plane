@@ -3,7 +3,9 @@
 set -Eeuo pipefail
 umask 077
 runtime=/var/lib/plane/pages-api
-image=edusantosbrito/plane-backend:v1.4.2-pages.2
+image="${PLANE_BACKEND_IMAGE:-edusantosbrito/plane-backend:v1.4.2-pages.3}"
+test_db="${PLANE_TEST_DB_CONTAINER:-pages-test-db}"
+test_network="${PLANE_TEST_NETWORK:-plane-routes-tests}"
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 backup="/var/backups/plane/attachments-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$backup"
@@ -67,19 +69,19 @@ fingerprint() {
 }
 fingerprint > "$backup/records-before.json"
 # Restore the full dump on the disposable test network before migrating production.
-docker exec pages-test-db createdb -U plane attachment_restore_validation
-docker exec -i pages-test-db pg_restore -U plane -d attachment_restore_validation < "$backup/database.dump"
-docker run --rm --network plane-routes-tests --entrypoint python \
+docker exec "$test_db" createdb -U plane attachment_restore_validation
+docker exec -i "$test_db" pg_restore -U plane -d attachment_restore_validation < "$backup/database.dump"
+docker run --rm --network "$test_network" --entrypoint python \
   -e DJANGO_SETTINGS_MODULE=plane.settings.test \
   -e DATABASE_URL=postgresql://plane:plane@pages-test-db:5432/attachment_restore_validation \
   -e REDIS_URL=redis://pages-test-redis:6379/0 -e SECRET_KEY=isolated-restore-validation \
   -e AMQP_URL=memory:// "$image" manage.py migrate --noinput
-docker run --rm --network plane-routes-tests --entrypoint python \
+docker run --rm --network "$test_network" --entrypoint python \
   -e DATABASE_URL=postgresql://plane:plane@pages-test-db:5432/attachment_restore_validation \
   -v "$backup/record_fingerprints.py:/tmp/record_fingerprints.py:ro" \
   "$image" /tmp/record_fingerprints.py > "$backup/records-restored-migrated.json"
 cmp "$backup/records-before.json" "$backup/records-restored-migrated.json"
-docker exec pages-test-db dropdb -U plane attachment_restore_validation
+docker exec "$test_db" dropdb -U plane attachment_restore_validation
 echo 'PASS: full backup restored and migrated on the isolated test network.'
 
 cat > "$runtime/attachments.compose.yml" <<EOF

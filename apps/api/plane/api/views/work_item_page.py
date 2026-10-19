@@ -7,6 +7,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from plane.api.page_content import CONTENT_PARAMETERS, PageContentOptions, defer_page_bodies
 from plane.api.serializers.page import IssuePageCreateSerializer, IssuePageSerializer
 from plane.api.views.page import LIST_PARAMETERS, PageEndpoint
 from plane.db.models import Issue, IssuePage, Page
@@ -32,6 +33,11 @@ class WorkItemEndpoint(PageEndpoint):
 class WorkItemPageEndpoint(WorkItemEndpoint):
     serializer_class = IssuePageSerializer
 
+    def get_serializer_context(self):
+        return super().get_serializer_context() | {
+            "page_content": getattr(self, "content_options", PageContentOptions())
+        }
+
     def pages(self):
         # Explicit attachments stay within a project, like the project Page API.
         # Global Pages are excluded even if a ProjectPage link also exists.
@@ -39,7 +45,7 @@ class WorkItemPageEndpoint(WorkItemEndpoint):
 
     def associations(self):
         issue = self.issue()
-        return (
+        associations = (
             IssuePage.objects.filter(
                 issue=issue,
                 project_id=self.kwargs["project_id"],
@@ -49,23 +55,25 @@ class WorkItemPageEndpoint(WorkItemEndpoint):
             .select_related("page")
             .order_by("-created_at", "id")
         )
+        return defer_page_bodies(associations, getattr(self, "content_options", PageContentOptions()), "page__")
 
 
 class WorkItemPageListEndpoint(WorkItemPageEndpoint):
     @extend_schema(
         operation_id="list_work_item_pages",
         tags=["Pages"],
-        parameters=LIST_PARAMETERS[:2],
+        parameters=LIST_PARAMETERS[:2] + CONTENT_PARAMETERS,
         responses={200: create_paginated_response(IssuePageSerializer, "PaginatedWorkItemPageResponse", "Pages")},
     )
     def get(self, request, slug, project_id, issue_id):
+        self.content_options = PageContentOptions.from_query(request.query_params)
         # The shared paginator does not reject zero/negative page sizes itself.
         if self.get_per_page(request, 20, 100) < 1:
             raise ValidationError({"per_page": "Must be positive."})
         return self.paginate(
             request=request,
             queryset=self.associations(),
-            on_results=lambda rows: IssuePageSerializer(rows, many=True).data,
+            on_results=lambda rows: self.get_serializer(rows, many=True).data,
             default_per_page=20,
             max_per_page=100,
         )
@@ -74,9 +82,11 @@ class WorkItemPageListEndpoint(WorkItemPageEndpoint):
         operation_id="attach_page_to_work_item",
         tags=["Pages"],
         request=IssuePageCreateSerializer,
+        parameters=CONTENT_PARAMETERS,
         responses={200: IssuePageSerializer, 201: IssuePageSerializer},
     )
     def post(self, request, slug, project_id, issue_id):
+        self.content_options = PageContentOptions.from_query(request.query_params)
         serializer = IssuePageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
@@ -91,14 +101,22 @@ class WorkItemPageListEndpoint(WorkItemPageEndpoint):
                 page=page,
                 defaults={"project_id": issue.project_id, "created_by": request.user},
             )
-        return Response(IssuePageSerializer(association).data, status=201 if created else 200)
+            # Render inside the transaction: an unknown section must not leave a new pair.
+            data = self.get_serializer(association).data
+        return Response(data, status=201 if created else 200)
 
 
 class WorkItemPageDetailEndpoint(WorkItemPageEndpoint):
-    @extend_schema(operation_id="retrieve_work_item_page", tags=["Pages"], responses={200: IssuePageSerializer})
+    @extend_schema(
+        operation_id="retrieve_work_item_page",
+        tags=["Pages"],
+        parameters=CONTENT_PARAMETERS,
+        responses={200: IssuePageSerializer},
+    )
     def get(self, request, slug, project_id, issue_id, work_item_page_id):
+        self.content_options = PageContentOptions.from_query(request.query_params)
         association = get_object_or_404(self.associations(), pk=work_item_page_id)
-        return Response(IssuePageSerializer(association).data)
+        return Response(self.get_serializer(association).data)
 
     @extend_schema(operation_id="detach_page_from_work_item", tags=["Pages"], responses={204: None})
     def delete(self, request, slug, project_id, issue_id, work_item_page_id):

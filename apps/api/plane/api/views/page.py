@@ -14,7 +14,8 @@ from rest_framework.permissions import SAFE_METHODS
 from rest_framework.response import Response
 
 from plane.api.views.base import BaseAPIView
-from plane.api.serializers.page import PageSerializer, PageCreateSerializer, PageUpdateSerializer
+from plane.api.serializers.page import PageSerializer, PageCreateSerializer, PageUpdateSerializer, PageReadSerializer
+from plane.api.page_content import CONTENT_PARAMETERS, PageContentOptions, defer_page_bodies
 from plane.db.models import Page, PageVersion, Project, ProjectMember, ProjectPage, Workspace, WorkspaceMember
 from plane.api.page_locks import page_lock_redis
 from plane.utils.openapi import create_paginated_response
@@ -114,16 +115,20 @@ class PageEndpoint(BaseAPIView):
         if page.owned_by_id != self.request.user.id and self.member_role != 20:
             raise PermissionDenied("Only the owner or an admin can archive or delete a Page.")
 
-    def list_pages(self, request):
+    def list_pages(self, request, content_options=None):
         order = request.query_params.get("order_by", "-created_at")
         if order.lstrip("-") not in ("created_at", "updated_at", "name", "sort_order"):
             raise ValidationError({"order_by": "Unsupported ordering field."})
         pages = self.pages().order_by(order, "id")
+        if content_options is not None:
+            pages = defer_page_bodies(pages, content_options)
+        serializer = PageSerializer if content_options is None else PageReadSerializer
+        context = self.get_serializer_context() | {"page_content": content_options}
         # Keep archived Pages discoverable, including for the delete workflow.
         return self.paginate(
             request=request,
             queryset=pages,
-            on_results=lambda rows: PageSerializer(rows, many=True).data,
+            on_results=lambda rows: serializer(rows, many=True, context=context).data,
             default_per_page=20,
             max_per_page=100,
         )
@@ -247,11 +252,12 @@ class ProjectPageListEndpoint(PageEndpoint):
     @extend_schema(
         operation_id="list_project_pages",
         tags=["Pages"],
-        parameters=LIST_PARAMETERS,
+        parameters=LIST_PARAMETERS + CONTENT_PARAMETERS,
         responses={200: PAGE_LIST_RESPONSE},
     )
     def get(self, request, slug, project_id):
-        return self.list_pages(request)
+        options = PageContentOptions.from_query(request.query_params, default_full=True)
+        return self.list_pages(request, content_options=options)
 
     @page_docs("project", "create", request=PageCreateSerializer, responses={201: PageSerializer})
     def post(self, request, slug, project_id):
@@ -261,9 +267,12 @@ class ProjectPageListEndpoint(PageEndpoint):
 class ProjectPageDetailEndpoint(PageEndpoint):
     scope = "project"
 
-    @page_docs("project", "retrieve", responses={200: PageSerializer})
+    @page_docs("project", "retrieve", parameters=CONTENT_PARAMETERS, responses={200: PageSerializer})
     def get(self, request, slug, project_id, page_id):
-        return Response(PageSerializer(self.page()).data)
+        options = PageContentOptions.from_query(request.query_params, default_full=True)
+        context = self.get_serializer_context() | {"page_content": options}
+        page = get_object_or_404(defer_page_bodies(self.pages(), options), pk=page_id)
+        return Response(PageReadSerializer(page, context=context).data)
 
     @page_docs("project", "update", request=PageUpdateSerializer, responses={200: PageSerializer, 409: None})
     def put(self, request, slug, project_id, page_id):

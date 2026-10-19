@@ -34,7 +34,7 @@ Five additional operations implement the CLI overlay contract:
 - GET/DELETE the same path plus `{work_item_page_id}/` (the association UUID)
 - POST `/workspaces/{slug}/projects/{project_id}/work-items/{issue_id}/relations/remove/`
 
-All are under `/api/v1/`. Associations serialize a full nested Page and use
+All are under `/api/v1/`. Associations serialize light nested Page metadata by default and use
 Plane cursor pagination (`per_page` 1–100, default 20). Duplicate attach returns
 the existing association with 200; a new association returns 201. Detach soft
 deletes the association and returns 204; repeating it returns 404. The partial
@@ -90,7 +90,7 @@ From the repository root:
 
 ```sh
 revision=$(git rev-parse HEAD)
-docker build -f deployments/pages-api/Dockerfile.backend --build-arg REVISION="$revision" -t edusantosbrito/plane-backend:v1.4.2-pages.2 .
+docker build -f deployments/pages-api/Dockerfile.backend --build-arg REVISION="$revision" -t edusantosbrito/plane-backend:v1.4.2-pages.3 .
 docker build -f deployments/pages-api/Dockerfile.live --build-arg REVISION="$revision" -t edusantosbrito/plane-live:v1.4.2-pages.1 .
 ```
 
@@ -150,7 +150,7 @@ existing isolated `pages-test-db` and `pages-test-redis` containers on
 `plane-routes-tests`.
 
 Build the backend with `deployments/pages-api/Dockerfile.backend` and tag it
-`edusantosbrito/plane-backend:v1.4.2-pages.2`. Keep the existing live image.
+`edusantosbrito/plane-backend:v1.4.2-pages.3`. Keep the existing live image.
 The backend Dockerfile includes the new model, migration, views and public URLs.
 Run migration checks and API tests on the isolated PostgreSQL/Redis network
 before touching production. Set `AMQP_URL=memory://` for tests without RabbitMQ.
@@ -169,3 +169,58 @@ recreate API/workers and restart live/proxy. Verify row hashes and volume
 identities before creating scratch fixtures. Do not remove volumes. Retain the
 previous runtime configuration and images for rollback: old application images
 ignore the additive table, so rollback should not drop it or restore live data.
+
+
+## Selective Page reads
+
+Attachment list, retrieve and attach accept these query parameters:
+
+| Parameter | Contract |
+| --- | --- |
+| `with_content=true` | Legacy full nested Page, unchanged, including HTML/JSON/stripped text. |
+| `sections=true` | Light Page plus `outline`, `section_count`, and whole-document plain-text `total_chars`. |
+| `section=<id>` | Light Page plus `sections`; repeat at most 10 ids, returned in request order with duplicate ids collapsed. |
+| `body_format=html\|text` | Representation of a requested body; defaults to HTML. Requires `with_content=true` or `section`. |
+| `limit_chars=1..100000` | Per-body character cap. Requires `with_content=true` or `section`. |
+
+Default metadata contains only id, name, audit timestamps/users, archived_at,
+is_global, access and url. The canonical link is `base_host(request)` plus
+`/{slug}/projects/{project_id}/pages/{page_id}`, matching the web route and its
+`getRedirectionLink` implementation. HTML, JSON, stripped text and binary data
+are deferred in metadata read queries; they are not serialized or parsed.
+
+Whole-body HTML without a limit retains the legacy shape, including when
+`body_format=html` is explicit. Text or capped whole-body reads instead return
+light metadata plus `body`, `body_format`, `text_chars`, `total_chars`, and
+`truncated`. Full text uses stored `description_stripped`. Section bodies use
+source HTML slices or `strip_tags` of the same slices. `total_chars` counts the
+untruncated requested representation; `text_chars` counts untruncated plain
+text. Limits slice Unicode code points; capped HTML is a raw prefix, not
+reserialized or repaired markup.
+
+Each heading starts a section ending before the next heading of the same or
+higher level. Its `data-id` is the id, falling back to one-based positional
+`sN`. A nonempty region before the first heading is `preamble`, level 0, with
+an empty title. A heading-free document always has one preamble, including an
+empty document. Outline entries are in document order and expose id, level,
+title and text_chars. Parent section text counts include child headings and
+content, so summing outline counts double-counts children. No sub-pages are
+loaded.
+
+Conflicting switches, invalid values, repeated scalar options and unknown
+section ids return field-specific 400 errors. `with_content=true` can only be
+combined with body_format/limit_chars; outline rejects section/body_format/
+limit_chars. Invalid attach projections render inside the transaction and
+cannot leave a new association behind. `format` is not a content parameter.
+
+Project Page list/retrieve keep their full default when no content parameter
+is passed. Passing any content option uses the same mode rules as attachments;
+`with_content=false` opts into metadata. Workspace Page routes are unchanged.
+There is no database migration or dependency change for this extension.
+`Dockerfile.backend` explicitly ships the new `plane/api/page_content.py`.
+
+The deployment script accepts `PLANE_BACKEND_IMAGE`, `PLANE_TEST_DB_CONTAINER`
+and `PLANE_TEST_NETWORK` overrides. The current content-mode deployment uses
+`pages-content-db` and `plane-content-tests`; the test network aliases remain
+`pages-test-db` and `pages-test-redis` inside containers. Backups include row
+fingerprints for `issue_pages`, protecting existing user-approved links.
